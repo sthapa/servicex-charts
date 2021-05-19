@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-servicex-app
+spec:
+  replicas: {{ .Values.app.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-servicex-app
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-servicex-app
+        helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    spec:
+      serviceAccountName: {{ template "servicex.fullname" . }}
+      containers:
+      - name: {{ .Release.Name }}-servicex-app
+        image: {{ .Values.app.image }}:{{ .Values.app.tag }}
+        env:
+        - name: APP_CONFIG_FILE
+          value: "/opt/servicex/app.conf"
+        - name: INSTANCE_NAME
+          value: {{ .Release.Name }}
+        tty: true
+        stdin: true
+        imagePullPolicy: {{ .Values.app.pullPolicy }}
+        {{- if .Values.app.resources }}
+        resources:
+{{ toYaml .Values.app.resources | indent 10 }}
+        {{- end }}
+
+        volumeMounts:
+          - name: app-cfg
+            mountPath: /opt/servicex
+          - name: sqlite
+            mountPath: /sqlite
+        ports:
+          - containerPort: 5000
+
+      volumes:
+        - name: app-cfg
+          configMap:
+            name:  {{ .Release.Name }}-flask-config
+        - name: sqlite
+          emptyDir: {}

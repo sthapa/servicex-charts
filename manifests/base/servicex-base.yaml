@@ -5,5 +5,7 @@ metadata:
   name: servicex
   namespace: sthapa
 spec:
-  interval: 1m 
-  url: https://ssl-hep.github.io/ssl-helm-charts/
+  interval: 30s
+  ref:
+    branch: master
+  url: https://github.com/sthapa/servicex-charts

@@ -5,6 +5,7 @@ resources:
   - servicex-base.yaml
 configMapGenerator:
   - name: servicex-helm-config
+    namespace: flux-system
     files:
       - values.yaml
 configurations:

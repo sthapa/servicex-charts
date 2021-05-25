@@ -1,11 +1,1 @@
----
-apiVersion: source.toolkit.fluxcd.io/v1beta1
-kind: GitRepository
-metadata:
-  name: servicex
-  namespace: sthapa
-spec:
-  interval: 30s
-  ref:
-    branch: master
-  url: https://github.com/sthapa/servicex-charts
+

@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cmsaf-dev
+bases:
+  - ../base
+
+resources:
+  - servicex-values.yaml
+  #- servicex-rabbitmq-erlang-cookie.yaml
+

@@ -7,3 +7,5 @@ configMapGenerator:
   - name: servicex-helm-config
     files:
       - values.yaml
+configurations:
+  - kustomizeconfig.yaml

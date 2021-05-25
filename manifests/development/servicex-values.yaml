@@ -12,7 +12,7 @@ spec:
       sourceRef:
         kind: HelmRepository
         name: servicex
-      version: 1.0.8
+      version: 1.0.8-0
   interval: 1m
   values:
     # Enable deployment of Minio Object Store with this chart - use this if you

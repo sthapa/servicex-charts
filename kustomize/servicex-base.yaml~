@@ -1,0 +1,1111 @@
+---
+# Source: servicex/charts/minio/templates/post-install-prometheus-metrics-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: RELEASE-NAME-minio-update-prometheus-secret
+  labels:
+    app: minio-update-prometheus-secret
+    chart: minio-8.0.9
+    release: RELEASE-NAME
+    heritage: Helm
+---
+# Source: servicex/charts/minio/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "RELEASE-NAME-minio"
+  namespace: "flux-system"
+  labels:
+    app: minio
+    chart: minio-8.0.9
+    release: "RELEASE-NAME"
+---
+# Source: servicex/charts/rabbitmq/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: RELEASE-NAME-rabbitmq
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    helm.sh/chart: rabbitmq-7.6.9
+    app.kubernetes.io/instance: RELEASE-NAME
+    app.kubernetes.io/managed-by: Helm
+secrets:
+  - name: RELEASE-NAME-rabbitmq
+---
+# Source: servicex/templates/rbac/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: RELEASE-NAME-servicex
+  labels:
+    app: servicex
+    chart: servicex-1.0.7
+    release: "RELEASE-NAME"
+    heritage: "Helm"
+---
+# Source: servicex/charts/minio/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: RELEASE-NAME-minio
+  labels:
+    app: minio
+    chart: minio-8.0.9
+    release: RELEASE-NAME
+    heritage: Helm
+type: Opaque
+data:
+  accesskey: "bWluaW91c2Vy"
+  secretkey: "bGVmdGZvb3Qx"
+---
+# Source: servicex/charts/rabbitmq/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: RELEASE-NAME-rabbitmq
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    helm.sh/chart: rabbitmq-7.6.9
+    app.kubernetes.io/instance: RELEASE-NAME
+    app.kubernetes.io/managed-by: Helm
+type: Opaque
+data:
+  rabbitmq-password: "bGVmdGZvb3Qx"
+  rabbitmq-erlang-cookie: "TkJuT2RNUVlHTzVLSjJ5MHJiMDhYc1NCelhJTkY3Zjk="
+---
+# Source: servicex/templates/x509-secrets/proxy-secret.yaml
+# This is just a skeletal secret. The details will be filled in by the X509-Secret
+# service. We are deploying this as part of the helm chart so the X509 proxy secret
+# will also be deleted when the chart is deleted.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: RELEASE-NAME-x509-proxy
+  labels:
+    heritage: Helm
+    release: RELEASE-NAME
+    chart: servicex-1.0.7
+    app: RELEASE-NAME
+type: Opaque
+---
+# Source: servicex/charts/minio/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: RELEASE-NAME-minio
+  labels:
+    app: minio
+    chart: minio-8.0.9
+    release: RELEASE-NAME
+    heritage: Helm
+data:
+  initialize: |-
+    #!/bin/sh
+    set -e ; # Have script exit in the event of a failed command.
+    MC_CONFIG_DIR="/etc/minio/mc/"
+    MC="/usr/bin/mc --insecure --config-dir ${MC_CONFIG_DIR}"
+    
+    # connectToMinio
+    # Use a check-sleep-check loop to wait for Minio service to be available
+    connectToMinio() {
+      SCHEME=$1
+      ATTEMPTS=0 ; LIMIT=29 ; # Allow 30 attempts
+      set -e ; # fail if we can't read the keys.
+      ACCESS=$(cat /config/accesskey) ; SECRET=$(cat /config/secretkey) ;
+      set +e ; # The connections to minio are allowed to fail.
+      echo "Connecting to Minio server: $SCHEME://$MINIO_ENDPOINT:$MINIO_PORT" ;
+      MC_COMMAND="${MC} config host add myminio $SCHEME://$MINIO_ENDPOINT:$MINIO_PORT $ACCESS $SECRET" ;
+      $MC_COMMAND ;
+      STATUS=$? ;
+      until [ $STATUS = 0 ]
+      do
+        ATTEMPTS=`expr $ATTEMPTS + 1` ;
+        echo \"Failed attempts: $ATTEMPTS\" ;
+        if [ $ATTEMPTS -gt $LIMIT ]; then
+          exit 1 ;
+        fi ;
+        sleep 2 ; # 1 second intervals between attempts
+        $MC_COMMAND ;
+        STATUS=$? ;
+      done ;
+      set -e ; # reset `e` as active
+      return 0
+    }
+    
+    # checkBucketExists ($bucket)
+    # Check if the bucket exists, by using the exit code of `mc ls`
+    checkBucketExists() {
+      BUCKET=$1
+      CMD=$(${MC} ls myminio/$BUCKET > /dev/null 2>&1)
+      return $?
+    }
+    
+    # createBucket ($bucket, $policy, $purge)
+    # Ensure bucket exists, purging if asked to
+    createBucket() {
+      BUCKET=$1
+      POLICY=$2
+      PURGE=$3
+      VERSIONING=$4
+    
+      # Purge the bucket, if set & exists
+      # Since PURGE is user input, check explicitly for `true`
+      if [ $PURGE = true ]; then
+        if checkBucketExists $BUCKET ; then
+          echo "Purging bucket '$BUCKET'."
+          set +e ; # don't exit if this fails
+          ${MC} rm -r --force myminio/$BUCKET
+          set -e ; # reset `e` as active
+        else
+          echo "Bucket '$BUCKET' does not exist, skipping purge."
+        fi
+      fi
+    
+      # Create the bucket if it does not exist
+      if ! checkBucketExists $BUCKET ; then
+        echo "Creating bucket '$BUCKET'"
+        ${MC} mb myminio/$BUCKET
+      else
+        echo "Bucket '$BUCKET' already exists."
+      fi
+    
+    
+      # set versioning for bucket
+      if [ ! -z $VERSIONING ] ; then
+        if [ $VERSIONING = true ] ; then
+            echo "Enabling versioning for '$BUCKET'"
+            ${MC} version enable myminio/$BUCKET
+        elif [ $VERSIONING = false ] ; then
+            echo "Suspending versioning for '$BUCKET'"
+            ${MC} version suspend myminio/$BUCKET
+        fi
+      else
+          echo "Bucket '$BUCKET' versioning unchanged."
+      fi
+    
+      # At this point, the bucket should exist, skip checking for existence
+      # Set policy on the bucket
+      echo "Setting policy of bucket '$BUCKET' to '$POLICY'."
+      ${MC} policy set $POLICY myminio/$BUCKET
+    }
+    
+    # Try connecting to Minio instance
+    scheme=http
+    connectToMinio $scheme
+---
+# Source: servicex/charts/rabbitmq/templates/configuration.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: RELEASE-NAME-rabbitmq-config
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    helm.sh/chart: rabbitmq-7.6.9
+    app.kubernetes.io/instance: RELEASE-NAME
+    app.kubernetes.io/managed-by: Helm
+data:
+  rabbitmq.conf: |-
+    ## Username and password
+    default_user = user
+    default_pass = CHANGEME
+    ## Clustering
+    cluster_formation.peer_discovery_backend  = rabbit_peer_discovery_k8s
+    cluster_formation.k8s.host = kubernetes.default.svc.cluster.local
+    cluster_formation.node_cleanup.interval = 10
+    cluster_formation.node_cleanup.only_log_warning = true
+    cluster_partition_handling = autoheal
+    # queue master locator
+    queue_master_locator = min-masters
+    # enable guest user
+    loopback_users.guest = false
+    #default_vhost = flux-system-vhost
+    #disk_free_limit.absolute = 50MB
+    #load_definitions = /app/load_definition.json
+---
+# Source: servicex/templates/app/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: RELEASE-NAME-flask-config
+  labels:
+    heritage: Helm
+    release: RELEASE-NAME
+    chart: servicex-1.0.7
+    app: RELEASE-NAME
+data:
+  app.conf: |
+    INSTANCE_NAME = 'RELEASE-NAME'
+    
+    #SERVER_NAME = '127.0.0.1:5000'
+    # this is the session secret, used to protect the Flask session. You should
+    # use a longer secret string known only to your application
+    # details are beyond the scope of this example
+    SECRET_KEY = 'abc123!'
+
+    # Base url of documentation - autopopulated from chart version
+    # Must be activated at https://readthedocs.org/projects/servicex/versions/
+    DOCS_BASE_URL = 'https://servicex.readthedocs.io/en/latest'
+
+    # Enable JWT auth on public endpoints
+    ENABLE_AUTH=False
+
+    # Globus configuration
+    GLOBUS_CLIENT_ID = ''
+    GLOBUS_CLIENT_SECRET = ''
+
+    # Specify an email address for the first admin user
+    JWT_ADMIN = 'admin@example.com'
+
+    # Number of seconds the JWT is valid for
+    JWT_REFRESH_TOKEN_EXPIRES=False
+    JWT_ACCESS_TOKEN_EXPIRES=21600
+
+    # Slack webhooks
+    
+    
+
+    # Mailgun configuration
+    MAILGUN_API_KEY = ''
+    MAILGUN_DOMAIN = ''
+
+    
+    SQLALCHEMY_DATABASE_URI = 'sqlite:////sqlite/app.db'
+    
+
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+    SECRET_KEY = 'some-secret-string'
+    JWT_SECRET_KEY = 'jwt-secret-string'
+    RABBIT_MQ_URL= 'amqp://user:leftfoot1@RELEASE-NAME-rabbitmq:5672/%2F'
+    TRANSFORMER_RABBIT_MQ_URL= 'amqp://user:leftfoot1@RELEASE-NAME-rabbitmq:5672/%2F?heartbeat=9000'
+
+    # Keep retrying to connect to Rabbit if its not yet up
+    RABBIT_RETRIES = 12
+    RABBIT_RETRY_INTERVAL = 10
+
+    ADVERTISED_HOSTNAME= 'RELEASE-NAME-servicex-app:8000'
+
+    
+
+    TRANSFORMER_NAMESPACE="flux-system"
+
+    TRANSFORMER_PULL_POLICY = 'Always'
+
+    TRANSFORMER_MANAGER_ENABLED = True
+
+    TRANSFORMER_AUTOSCALE_ENABLED =True
+    TRANSFORMER_CPU_LIMIT = 1
+    TRANSFORMER_CPU_SCALE_THRESHOLD = 30
+    TRANSFORMER_MIN_REPLICAS = 1
+    TRANSFORMER_MAX_REPLICAS = 20
+    TRANSFORMER_MANAGER_MODE = 'internal-kubernetes'
+    TRANSFORMER_X509_SECRET="RELEASE-NAME-x509-proxy"
+    TRANSFORMER_VALIDATE_DOCKER_IMAGE =True
+
+    TRANSFORMER_MESSAGING = 'none'
+    TRANSFORMER_DEFAULT_IMAGE = "sslhep/servicex_func_adl_xaod_transformer:develop"
+
+
+    
+    OBJECT_STORE_ENABLED = True
+    MINIO_URL = 'RELEASE-NAME-minio:9000'
+    MINIO_URL_TRANSFORMER = 'RELEASE-NAME-minio:9000'
+    MINIO_ACCESS_KEY = 'miniouser'
+    MINIO_SECRET_KEY = 'leftfoot1'
+
+    MINIO_PUBLIC_URL = 'RELEASE-NAME--minio:9000'
+    
+
+    
+
+    
+    CODE_GEN_SERVICE_URL = 'http://RELEASE-NAME-code-gen:8000'
+    CODE_GEN_IMAGE = 'sslhep/servicex_code_gen_func_adl_xaod:develop'
+    
+
+    DID_FINDER_DEFAULT_SCHEME = 'rucio'
+    VALID_DID_SCHEMES = [ "rucio" ]
+---
+# Source: servicex/templates/did-finder/rucio-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: RELEASE-NAME-rucio-config
+  labels:
+    heritage: Helm
+    release: RELEASE-NAME
+    chart: servicex-1.0.7
+    app: RELEASE-NAME
+data:
+  rucio.cfg: |
+    [client]
+    rucio_host = https://voatlasrucio-server-prod.cern.ch:443
+    auth_host = https://voatlasrucio-auth-prod.cern.ch:443
+    auth_type = x509_proxy
+    ca_cert = /etc/pki/tls/certs/ca-bundle.crt
+    account = <your account>
+    client_x509_proxy = $X509_USER_PROXY
+    request_retries = 3
+
+    [policy]
+    permission = atlas
+    schema = atlas
+    lfn2pfn_algorithm_default = hash
+---
+# Source: servicex/charts/minio/templates/post-install-prometheus-metrics-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: RELEASE-NAME-minio-update-prometheus-secret
+  labels:
+    app: minio-update-prometheus-secret
+    chart: minio-8.0.9
+    release: RELEASE-NAME
+    heritage: Helm
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - create
+      - update
+      - patch
+    resourceNames:
+      - RELEASE-NAME-minio-prometheus
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - create
+  - apiGroups:
+      - monitoring.coreos.com
+    resources:
+      - servicemonitors
+    verbs:
+      - get
+    resourceNames:
+      - RELEASE-NAME-minio
+---
+# Source: servicex/charts/rabbitmq/templates/role.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: RELEASE-NAME-rabbitmq-endpoint-reader
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    helm.sh/chart: rabbitmq-7.6.9
+    app.kubernetes.io/instance: RELEASE-NAME
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+---
+# Source: servicex/templates/rbac/role.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: RELEASE-NAME-servicex-job-manager
+  labels:
+    app: servicex
+    chart: servicex-1.0.7
+    release: "RELEASE-NAME"
+    heritage: "Helm"
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# Source: servicex/templates/rbac/role.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: RELEASE-NAME-servicex-x509-secret-manager
+  labels:
+    app: servicex
+    chart: servicex-1.0.7
+    release: "RELEASE-NAME"
+    heritage: "Helm"
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# Source: servicex/templates/rbac/role.yaml
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: RELEASE-NAME-servicex-configmap-manager
+  labels:
+    app: servicex
+    chart: servicex-1.0.7
+    release: "RELEASE-NAME"
+    heritage: "Helm"
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# Source: servicex/charts/minio/templates/post-install-prometheus-metrics-rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: RELEASE-NAME-minio-update-prometheus-secret
+  labels:
+    app: minio-update-prometheus-secret
+    chart: minio-8.0.9
+    release: RELEASE-NAME
+    heritage: Helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: RELEASE-NAME-minio-update-prometheus-secret
+subjects:
+  - kind: ServiceAccount
+    name: RELEASE-NAME-minio-update-prometheus-secret
+    namespace: "flux-system"
+---
+# Source: servicex/charts/rabbitmq/templates/rolebinding.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: RELEASE-NAME-rabbitmq-endpoint-reader
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    helm.sh/chart: rabbitmq-7.6.9
+    app.kubernetes.io/instance: RELEASE-NAME
+    app.kubernetes.io/managed-by: Helm
+subjects:
+  - kind: ServiceAccount
+    name: RELEASE-NAME-rabbitmq
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: RELEASE-NAME-rabbitmq-endpoint-reader
+---
+# Source: servicex/templates/rbac/rolebinding.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: RELEASE-NAME-servicex-job-manager
+  labels:
+    app: servicex
+    chart: servicex-1.0.7
+    release: "RELEASE-NAME"
+    heritage: "Helm"
+subjects:
+- kind: ServiceAccount
+  name: RELEASE-NAME-servicex
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: RELEASE-NAME-servicex-job-manager
+---
+# Source: servicex/templates/rbac/rolebinding.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: RELEASE-NAME-servicex-x509-secret-manager
+  labels:
+    app: servicex
+    chart: servicex-1.0.7
+    release: "RELEASE-NAME"
+    heritage: "Helm"
+subjects:
+- kind: ServiceAccount
+  name: RELEASE-NAME-servicex
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: RELEASE-NAME-servicex-x509-secret-manager
+---
+# Source: servicex/templates/rbac/rolebinding.yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: RELEASE-NAME-servicex-configmap-manager
+  labels:
+    app: servicex
+    chart: servicex-1.0.7
+    release: "RELEASE-NAME"
+    heritage: "Helm"
+subjects:
+- kind: ServiceAccount
+  name: RELEASE-NAME-servicex
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: RELEASE-NAME-servicex-configmap-manager
+---
+# Source: servicex/charts/minio/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: RELEASE-NAME-minio
+  labels:
+    app: minio
+    chart: minio-8.0.9
+    release: RELEASE-NAME
+    heritage: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 9000
+      protocol: TCP
+      targetPort: 9000
+  selector:
+    app: minio
+    release: RELEASE-NAME
+---
+# Source: servicex/charts/rabbitmq/templates/svc-headless.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: RELEASE-NAME-rabbitmq-headless
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    helm.sh/chart: rabbitmq-7.6.9
+    app.kubernetes.io/instance: RELEASE-NAME
+    app.kubernetes.io/managed-by: Helm
+spec:
+  clusterIP: None
+  ports:
+    - name: epmd
+      port: 4369
+      targetPort: epmd
+    - name: amqp
+      port: 5672
+      targetPort: amqp
+    - name: dist
+      port: 25672
+      targetPort: dist
+    - name: stats
+      port: 15672
+      targetPort: stats
+  selector: 
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/instance: RELEASE-NAME
+---
+# Source: servicex/charts/rabbitmq/templates/svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: RELEASE-NAME-rabbitmq
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    helm.sh/chart: rabbitmq-7.6.9
+    app.kubernetes.io/instance: RELEASE-NAME
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: amqp
+      nodePort: null
+    - name: epmd
+      port: 4369
+      targetPort: epmd
+      nodePort: null
+    - name: dist
+      port: 25672
+      targetPort: dist
+      nodePort: null
+    - name: http-stats
+      port: 15672
+      targetPort: stats
+      nodePort: null
+  selector: 
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/instance: RELEASE-NAME
+---
+# Source: servicex/templates/app/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: RELEASE-NAME-servicex-app
+spec:
+  ports:
+   - port: 8000
+     targetPort: 5000
+     name: "tcp"
+     protocol: TCP
+  selector:
+    app: RELEASE-NAME-servicex-app
+  type: ClusterIP
+---
+# Source: servicex/templates/codegen/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: RELEASE-NAME-code-gen
+spec:
+  ports:
+   - port: 8000
+     targetPort: 5000
+     name: "tcp"
+     protocol: TCP
+  selector:
+    app: RELEASE-NAME-code-gen
+  type: ClusterIP
+---
+# Source: servicex/charts/minio/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: RELEASE-NAME-minio
+  labels:
+    app: minio
+    chart: minio-8.0.9
+    release: RELEASE-NAME
+    heritage: Helm
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 100%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: minio
+      release: RELEASE-NAME
+  template:
+    metadata:
+      name: RELEASE-NAME-minio
+      labels:
+        app: minio
+        release: RELEASE-NAME
+      annotations:
+        checksum/secrets: 3757649ff92126ef6770b9518ccc755925eb3994deae276cf4a85d67d7f13324
+        checksum/config: cc4342ac28db52121dcc32c7857789eea71f88a2c81b47945250defa91e29615
+    spec:
+      serviceAccountName: "RELEASE-NAME-minio"
+      containers:
+        - name: minio
+          image: "minio/minio:RELEASE.2020-12-03T05-49-24Z"
+          imagePullPolicy: IfNotPresent
+          command:
+            - "/bin/sh"
+            - "-ce"
+            - "/usr/bin/docker-entrypoint.sh minio -S /etc/minio/certs/ server /export"
+          volumeMounts:            
+          ports:
+            - name: http
+              containerPort: 9000
+          env:
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: RELEASE-NAME-minio
+                  key: accesskey
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: RELEASE-NAME-minio
+                  key: secretkey
+          resources:
+            requests:
+              memory: 4Gi      
+      volumes:
+        - name: export
+          emptyDir: {}
+        - name: minio-user
+          secret:
+            secretName: RELEASE-NAME-minio
+---
+# Source: servicex/templates/app/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: RELEASE-NAME-servicex-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: RELEASE-NAME-servicex-app
+  template:
+    metadata:
+      labels:
+        app: RELEASE-NAME-servicex-app
+        helm.sh/chart: servicex-1.0.7
+    spec:
+      serviceAccountName: RELEASE-NAME-servicex
+      containers:
+      - name: RELEASE-NAME-servicex-app
+        image: sslhep/servicex_app:develop
+        env:
+        - name: APP_CONFIG_FILE
+          value: "/opt/servicex/app.conf"
+        - name: INSTANCE_NAME
+          value: RELEASE-NAME
+        tty: true
+        stdin: true
+        imagePullPolicy: Always
+
+        volumeMounts:
+          - name: app-cfg
+            mountPath: /opt/servicex
+          - name: sqlite
+            mountPath: /sqlite
+        ports:
+          - containerPort: 5000
+
+      volumes:
+        - name: app-cfg
+          configMap:
+            name:  RELEASE-NAME-flask-config
+        - name: sqlite
+          emptyDir: {}
+---
+# Source: servicex/templates/codegen/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: RELEASE-NAME-code-gen
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: RELEASE-NAME-code-gen
+  template:
+    metadata:
+      labels:
+        app: RELEASE-NAME-code-gen
+    spec:
+      serviceAccountName: RELEASE-NAME-servicex
+      containers:
+      - name: RELEASE-NAME-code-gen
+        image: sslhep/servicex_code_gen_func_adl_xaod:develop
+        env:
+        - name: APP_CONFIG_FILE
+          value: "/opt/servicex/app.conf"
+        - name: INSTANCE_NAME
+          value: RELEASE-NAME
+        tty: true
+        stdin: true
+        imagePullPolicy: Always
+        volumeMounts:
+          - name: app-cfg
+            mountPath: /opt/servicex
+        ports:
+          - containerPort: 5000
+
+      volumes:
+        - name: app-cfg
+          configMap:
+            name:  RELEASE-NAME-flask-config
+---
+# Source: servicex/templates/did-finder/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: RELEASE-NAME-did-finder
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: RELEASE-NAME-did-finder
+  template:
+    metadata:
+      labels:
+        app: RELEASE-NAME-did-finder
+    spec:
+      containers:
+      - name: RELEASE-NAME-did-finder
+        image: sslhep/servicex-did-finder:develop
+        command: ["/usr/src/app/runme.sh"]
+        imagePullPolicy: Always
+        env:
+          - name: RMQ_URI
+            value: amqp://user:leftfoot1@RELEASE-NAME-rabbitmq:5672
+          - name: SITE
+            value: 
+          - name: DID_THREADS
+            value: "5"
+          - name: INSTANCE_NAME
+            value: RELEASE-NAME
+        volumeMounts:
+          - name: rucio-cfg
+            mountPath: /opt/rucio/etc/
+          - name: x509-secret
+            mountPath: /etc/grid-security-ro
+            readOnly: true
+
+      volumes:
+        - name: rucio-cfg
+          configMap:
+            name: RELEASE-NAME-rucio-config
+        - name: x509-secret
+          secret:
+            defaultMode: 292
+            secretName: RELEASE-NAME-x509-proxy
+---
+# Source: servicex/templates/preflight/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: RELEASE-NAME-preflight
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: RELEASE-NAME-preflight
+  template:
+    metadata:
+      labels:
+        app: RELEASE-NAME-preflight
+    spec:
+      containers:
+      - name: RELEASE-NAME-preflight
+        image: sslhep/servicex_func_adl_xaod_transformer:develop
+        command: ["bash","-c"]
+        env:
+          - name: "BASH_ENV"
+            value: "/servicex/.bashrc"
+          - name: INSTANCE_NAME
+            value: RELEASE-NAME
+        args: ["/servicex/proxy-exporter.sh & sleep 5 && python /servicex/validate_requests.py --rabbit-uri amqp://user:leftfoot1@RELEASE-NAME-rabbitmq:5672/%2F"]
+        tty: true
+        stdin: true
+        imagePullPolicy: Always
+        volumeMounts:
+          - name: x509-secret
+            mountPath: /etc/grid-security-ro
+            readOnly: true
+
+          
+      volumes:
+        - name: x509-secret
+          secret:
+            defaultMode: 292
+            secretName: RELEASE-NAME-x509-proxy
+---
+# Source: servicex/templates/x509-secrets/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: RELEASE-NAME-x509-secrets
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: RELEASE-NAME-x509-secrets
+  template:
+    metadata:
+      labels:
+        app: RELEASE-NAME-x509-secrets
+    spec:
+      serviceAccountName: RELEASE-NAME-servicex
+      # Before launching the main container, copy the certs and set their permissions accordingly
+      initContainers:
+        - name: take-data-dir-ownership
+          image: alpine:3.6
+          command: ["/bin/sh","-c"]
+          args: ["cp /etc/grid-certs-ro/usercert.pem /etc/grid-certs; chmod 600 /etc/grid-certs/usercert.pem; cp /etc/grid-certs-ro/userkey.pem /etc/grid-certs; chmod 400 /etc/grid-certs/userkey.pem"]
+          env:
+            - name: INSTANCE_NAME
+              value: RELEASE-NAME
+          volumeMounts:
+          - name: grid-certs-rw-copy
+            mountPath: /etc/grid-certs/
+          - name: grid-secret
+            mountPath: /etc/grid-certs-ro/
+      containers:
+      - name: RELEASE-NAME-x509-secrets
+        image: sslhep/x509-secrets:develop
+        command: ["bash","-c"]
+        args: ["python3 x509_updater.py --secret RELEASE-NAME-x509-proxy --voms atlas"]
+        env:
+          - name: MY_POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: MY_POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+        tty: true
+        stdin: true
+        imagePullPolicy: Always
+        volumeMounts:
+          - name: grid-certs-rw-copy
+            mountPath: /etc/grid-certs/
+          - name: grid-secret
+            mountPath: /etc/grid-certs-ro/
+
+      volumes:
+        # Mount the usercert, userkey, and passphrase file. These will have the
+        # wrong permissions to be used for generating the voms proxy
+        - name: grid-secret
+          secret:
+            secretName: grid-certs-secret  # Installed via servicex command line
+
+        # Create an empty dir to share between the init container and the main
+        # container. The init container will copy the certs from grid-secret
+        # to this dir and set the correct permissions
+        - name: grid-certs-rw-copy
+          emptyDir: {}
+---
+# Source: servicex/charts/rabbitmq/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: RELEASE-NAME-rabbitmq
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    helm.sh/chart: rabbitmq-7.6.9
+    app.kubernetes.io/instance: RELEASE-NAME
+    app.kubernetes.io/managed-by: Helm
+spec:
+  serviceName: RELEASE-NAME-rabbitmq-headless
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rabbitmq
+      app.kubernetes.io/instance: RELEASE-NAME
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rabbitmq
+        helm.sh/chart: rabbitmq-7.6.9
+        app.kubernetes.io/instance: RELEASE-NAME
+        app.kubernetes.io/managed-by: Helm
+      annotations:
+        checksum/secret: 58c2015e07c548eea96712581a934ceeeb50584934950a03c7b563864620c8b8
+    spec:
+      
+      serviceAccountName: RELEASE-NAME-rabbitmq
+      securityContext:
+        fsGroup: 1001
+        runAsUser: 1001
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: rabbitmq
+          image: docker.io/bitnami/rabbitmq:3.8.9-debian-10-r20
+          imagePullPolicy: "IfNotPresent"
+          env:
+            - name: BITNAMI_DEBUG
+              value: "false"
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: MY_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: K8S_SERVICE_NAME
+              value: "RELEASE-NAME-rabbitmq-headless"
+            - name: K8S_ADDRESS_TYPE
+              value: hostname
+            - name: RABBITMQ_FORCE_BOOT
+              value: "no"
+            - name: RABBITMQ_NODE_NAME
+              value: "rabbit@$(MY_POD_NAME).$(K8S_SERVICE_NAME).$(MY_POD_NAMESPACE).svc.cluster.local"
+            - name: K8S_HOSTNAME_SUFFIX
+              value: ".$(K8S_SERVICE_NAME).$(MY_POD_NAMESPACE).svc.cluster.local"
+            - name: RABBITMQ_MNESIA_DIR
+              value: "/bitnami/rabbitmq/mnesia/$(RABBITMQ_NODE_NAME)"
+            - name: RABBITMQ_LDAP_ENABLE
+              value: "no"
+            - name: RABBITMQ_LOGS
+              value: "-"
+            - name: RABBITMQ_ULIMIT_NOFILES
+              value: "65536"
+            - name: RABBITMQ_USE_LONGNAME
+              value: "true"
+            - name: RABBITMQ_ERL_COOKIE
+              valueFrom:
+                secretKeyRef:
+                  name: RELEASE-NAME-rabbitmq
+                  key: rabbitmq-erlang-cookie
+            - name: RABBITMQ_USERNAME
+              value: "user"
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: RELEASE-NAME-rabbitmq
+                  key: rabbitmq-password
+            - name: RABBITMQ_PLUGINS
+              value: "rabbitmq_management, rabbitmq_peer_discovery_k8s, rabbitmq_auth_backend_ldap"
+          ports:
+            - name: amqp
+              containerPort: 5672
+            - name: dist
+              containerPort: 25672
+            - name: stats
+              containerPort: 15672
+            - name: epmd
+              containerPort: 4369
+          livenessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - rabbitmq-diagnostics -q check_running
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 20
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - rabbitmq-diagnostics -q check_running
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 20
+            successThreshold: 1
+            failureThreshold: 3
+          resources:
+            limits: {}
+            requests: {}
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - bash
+                  - -ec
+                  - rabbitmqctl stop_app
+          volumeMounts:
+            - name: configuration
+              mountPath: /bitnami/rabbitmq/conf
+            - name: data
+              mountPath: /bitnami/rabbitmq/mnesia
+      volumes:
+        - name: configuration
+          configMap:
+            name: RELEASE-NAME-rabbitmq-config
+            items:
+              - key: rabbitmq.conf
+                path: rabbitmq.conf
+        - name: data
+          emptyDir: {}

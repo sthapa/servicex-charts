@@ -1,0 +1,64 @@
+postgres:
+  enabled: true
+# objectStore:
+#   publicURL: localhost:9000
+objectStore:
+  enabled: true
+  publicURL: minio.vukotic.me
+minio:
+  ingress:
+    enabled: true
+    annotations:
+      kubernetes.io/ingress.class: nginx
+      cert-manager.io/cluster-issuer: letsencrypt-prod-nginx
+      acme.cert-manager.io/http01-edit-in-place: "true"
+    hosts:
+      - "minio.vukotic.me"
+    tls:
+      - hosts:
+          - minio.vukotic.me
+        secretName: minio-vukotic-tls
+  persistence:
+    enabled: false
+  metrics:
+    serviceMonitor:
+      enabled: false
+transformer:
+  defaultTransformerImage: sslhep/servicex_func_adl_xaod_transformer:logging_test
+  imagePullPolicy: Always
+  autoscalerEnabled: true
+  # cpuLimit: 0.6
+  cpuScaleThreshold: 30
+gridAccount: ivukotic
+codeGen:
+  # Choose one of the following images to include in your values.yaml:
+  # For xAOD
+  image: sslhep/servicex_code_gen_func_adl_xaod
+  # Or for flat root files
+  # image: sslhep/servicex_code_gen_func_adl_uproot
+  # Or for miniAOD
+  # image: sslhep/servicex_code_gen_config_file
+preflight:
+  # Choose one of the following images to include in your values.yaml:
+  # For xAOD
+  image: sslhep/servicex_func_adl_xaod_transformer
+  # For flat root files or miniAOD
+  # image: sslhep/servicex_func_adl_uproot_transformer
+didFinder:
+  # For ATLAS Use these:
+  rucio_host: https://voatlasrucio-server-prod.cern.ch:443
+  auth_host: https://voatlasrucio-auth-prod.cern.ch:443
+x509Secrets:
+  # For ATLAS
+  vomsOrg: atlas
+app:
+  # image: sslhep/servicex_app
+  # tag: exporting-instance-name
+  # image: ivukotic/servicexapp
+  # tag: latest2
+  ingress:
+    enabled: true
+    tls:
+      enabled: true
+      clusterIssuer: letsencrypt-prod-nginx
+    host: vukotic.me

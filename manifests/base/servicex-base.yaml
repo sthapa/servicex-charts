@@ -7,5 +7,5 @@ metadata:
 spec:
   interval: 30s
   ref:
-    branch: develop
+    branch: master
   url: https://github.com/sthapa/servicex-charts

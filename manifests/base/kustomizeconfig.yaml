@@ -10,8 +10,8 @@ spec:
       chart: servicex
       version: '1.0.8'
       sourceRef:
-        kind: GitRepository
-        name: podinfo
+        kind: HelmRepository
+        name: servicex
         namespace: flux-system
       interval: 1m
   values:

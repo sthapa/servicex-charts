@@ -154,7 +154,3 @@ spec:
     gridAccount: <your account>
 
     rbacEnabled: True
-  valuesFrom:
-  - kind: ConfigMap
-    name: servicex-helm-config
-    valuesKey: values.yaml 

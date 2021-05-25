@@ -6,5 +6,4 @@ bases:
 
 resources:
   - servicex-values.yaml
-  #- servicex-rabbitmq-erlang-cookie.yaml
 

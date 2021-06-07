@@ -2,7 +2,7 @@ apiVersion: helm.toolkit.fluxcd.io/v2beta1
 kind: HelmRelease
 metadata:
   name: servicex
-  namespace: flux-system
+  namespace: sthapa
 spec:
   interval: 5m
   chart:
@@ -12,7 +12,7 @@ spec:
       sourceRef:
         kind: HelmRepository
         name: servicex
-        namespace: flux-system
+        namespace: sthapa
       interval: 1m
   values:
     replicaCount: 1
